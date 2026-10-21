@@ -10,7 +10,7 @@ APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 
 echo "Downloading Base Station Manager… / Завантажую Керування базовими станціями…"
-curl -fL --retry 2 -o "$T/$ASSET" "https://github.com/$REPO/releases/latest/download/$ASSET"
+curl -fsSL --retry 2 -o "$T/$ASSET" "https://github.com/$REPO/releases/latest/download/$ASSET"
 mkdir -p "$T/x" && tar -xzf "$T/$ASSET" -C "$T/x"
 
 pkill -x base-station-manager 2>/dev/null && sleep 2 || true
@@ -31,7 +31,7 @@ Terminal=false
 Categories=Game;Utility;
 DESKTOP
 
-if ! ldconfig -p 2>/dev/null | grep -q libwebkit2gtk-4.1; then
+if ! compgen -G "/usr/lib*/libwebkit2gtk-4.1.so.0" >/dev/null && ! compgen -G "/usr/lib/*/libwebkit2gtk-4.1.so.0" >/dev/null; then
     echo "⚠ WebKitGTK 4.1 is missing / бракує WebKitGTK 4.1:"
     echo "  Fedora: sudo dnf install webkit2gtk4.1    Debian/Ubuntu: sudo apt install libwebkit2gtk-4.1-0"
 fi
