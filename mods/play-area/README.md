@@ -1,7 +1,7 @@
 # mod: play-area — saved SteamVR play areas, auto re-apply, and a Room Setup that doesn't crash
 
 **Branch:** `mod/play-area` · **Base:** upstream `main` · **Depends on:** nothing
-**Platforms:** Linux (other platforms compile with stubs) · **Commits:** 5 (2026-09-21 … 09-27)
+**Platforms:** Linux (other platforms compile with stubs) · **Commits:** 6 (2026-09-21 … 11-06)
 
 [Українською](README.uk.md) · [All mods](../README.md)
 
@@ -11,6 +11,11 @@
    there is no quick way to put a known-good one back.
 2. SteamVR Room Setup crashes on Linux with AMD (Mesa RADV), so a drifted room can't be
    fixed the normal way.
+3. A hand-drawn outline with many walls crashes SteamVR: the compositor re-uploads the wall
+   mesh every frame while the bounds are visible (480 bytes per wall). Above 136 walls the
+   upload no longer fits `vkCmdUpdateBuffer` and goes through the 256 MB transfer ring, which
+   fills in ~30 s → `Vulkan transfer ring buffer overflow` → the headset goes dark, usually
+   right after the controllers turn on.
 
 ## What it adds
 
@@ -40,6 +45,9 @@
     launches Room Setup itself.
 - Zones are stored in `~/.config/vr-zones/zones.json`, the same format as the standalone
   vr-zones tool.
+- Before a zone is applied, outlines with more than 100 walls are **simplified**
+  (Douglas-Peucker on the floor plane, the smallest tolerance that fits; a real 151-wall
+  zone became 98 walls, at most 6 mm off). The log says `зону спрощено: N → M стін`.
 
 ## Build the helpers
 
@@ -66,7 +74,7 @@ executable (`tools/…`), then in the source tree (`build/bin/../../tools/…`).
 
 ## Files
 
-`playarea_linux.go`, `playarea_other.go`, `app.go` (`startZoneWatcher()`),
+`playarea_linux.go`, `playarea_simplify_linux.go` (+ test), `playarea_other.go`, `app.go` (`startZoneWatcher()`),
 `frontend/src/views/PlayAreaView.tsx`, `app.tsx` (route `/room`), `TitleBar.tsx` (icon),
 `lib/native/index.ts`, `locales/en.json`, `tools/vrchap-io/*`, `tools/room-setup-fix/*`,
 `.gitignore`.

@@ -281,6 +281,10 @@ func formatArea(pa []float64) string {
 }
 
 func applyBlob(blob string) error {
+	if s, before, after, ok := simplifyChaperoneBlob(blob); ok {
+		zoneLogf("зону спрощено: %d → %d стін (інакше SteamVR падає, коли видно межі)", before, after)
+		blob = s
+	}
 	code, out, errOut := runHelper(25*time.Second, blob, "import", "-")
 	if code == 0 && strings.Contains(out, "applied") {
 		return nil
