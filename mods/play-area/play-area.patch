@@ -1,7 +1,7 @@
 From 83df3d305fe16d5d49ce891265152b678bbeefeb Mon Sep 17 00:00:00 2001
 From: Lina <lokinyauv@gmail.com>
 Date: Mon, 21 Sep 2026 20:58:11 +0200
-Subject: [PATCH 1/5] feat(tools): launcher that keeps SteamVR Room Setup from
+Subject: [PATCH 1/6] feat(tools): launcher that keeps SteamVR Room Setup from
  crashing on Linux/AMD
 
 Room Setup (Unity 5.6) creates a 50x32 image with 7 mip levels; Vulkan allows 6, and Mesa RADV traps (SIGTRAP in Addr2ComputeSurfaceInfo). The VK_LAYER_vrfix_mipclamp layer clamps mipLevels in vkCreateImage/vkCreateImageView and stubs the VK_EXT_debug_utils calls vrclient makes without a NULL check. vr-room-setup also enables SteamVR's envextensions layer with the external memory/semaphore extensions SteamVR adds itself when it launches Room Setup, so a manual launch works.
@@ -390,14 +390,14 @@ index 0000000..652548c
 +
 +exec "$SV/tools/steamvr_room_setup/linux64/steamvr_room_setup.sh" -popupwindow "$@"
 -- 
-2.55.0
+2.56.0
 
 
 From 8481a91733d985de557db4055c5ef7c1f9aa1454 Mon Sep 17 00:00:00 2001
 From: Lina <lokinyauv@gmail.com>
 Date: Tue, 22 Sep 2026 00:34:05 +0200
-Subject: [PATCH 2/5] feat(tools): vrchap-io, export/import the live SteamVR
- play area
+Subject: [PATCH 2/6] feat(tools): vrchap-io, export/import the live SteamVR play
+ area
 
 A tiny OpenVR client: 'check', 'export' (IVRChaperoneSetup::ExportLiveToBuffer) and 'import' (ImportFromBufferToWorking + CommitWorkingCopy), the same calls Room Setup uses. It refuses to start SteamVR itself (exit code 3 when vrserver isn't running).
 
@@ -583,14 +583,14 @@ index 0000000..2a8fa35
 +    return rc;
 +}
 -- 
-2.55.0
+2.56.0
 
 
 From e700d466e0a9da411d6d158b7827750340a7192d Mon Sep 17 00:00:00 2001
 From: Lina <lokinyauv@gmail.com>
 Date: Sat, 26 Sep 2026 21:15:00 +0200
-Subject: [PATCH 3/5] feat: Room page - saved play areas, auto re-apply and
- Room Setup
+Subject: [PATCH 3/6] feat: Room page - saved play areas, auto re-apply and Room
+ Setup
 
 Folds the standalone vr-zones tool and the Room Setup launcher into the app (Linux; other platforms get stubs):
 - save the current play area under a name, apply / rename / delete it, and
@@ -1840,13 +1840,13 @@ index 0000000..c4adf90
 +func (a *App) SetAutoZone(id string) string             { return playAreaUnsupported }
 +func (a *App) LaunchRoomSetup() string                  { return playAreaUnsupported }
 -- 
-2.55.0
+2.56.0
 
 
 From d293eba33cc6d082b93dbd3ff23f8f940365fcc0 Mon Sep 17 00:00:00 2001
 From: Lina <lokinyauv@gmail.com>
 Date: Sat, 26 Sep 2026 23:44:28 +0200
-Subject: [PATCH 4/5] fix(play-area): give SteamVR up to 2 min to settle the
+Subject: [PATCH 4/6] fix(play-area): give SteamVR up to 2 min to settle the
  universe before applying
 
 In a live session (2026-09-26 22:01) the auto zone only went in on attempt
@@ -1923,14 +1923,14 @@ index cff3f8a..11e418d 100644
  
  // ---------- bindings -----------------------------------------------------------------------------
 -- 
-2.55.0
+2.56.0
 
 
 From f47ac2258b22d8b464579b8745391364fafa0f1f Mon Sep 17 00:00:00 2001
 From: Lina <lokinyauv@gmail.com>
 Date: Sun, 27 Sep 2026 06:25:49 +0200
-Subject: [PATCH 5/5] fix(play-area): stop re-applying the zone after base
- station recalibration
+Subject: [PATCH 5/6] fix(play-area): stop re-applying the zone after base station
+ recalibration
 
 The watcher re-applied the auto zone ~3 s after every "CALIBRATED base" in
 vrserver.txt. Controllers and trackers log that whenever they re-acquire a
@@ -2088,5 +2088,280 @@ index 11e418d..0165ae3 100644
  
  // ---------- bindings -----------------------------------------------------------------------------
 -- 
-2.55.0
+2.56.0
 
+
+From 6865b6945465044f26619b917f3206c21d3cd0ea Mon Sep 17 00:00:00 2001
+From: Lina <lokinyauv@gmail.com>
+Date: Fri, 6 Nov 2026 23:45:35 +0100
+Subject: [PATCH 6/6] fix(play-area): simplify zones with too many walls before
+ applying them
+
+SteamVR's compositor re-uploads the chaperone wall mesh every frame while
+the bounds are visible, 480 bytes per wall. Above 136 walls (> 65535 bytes)
+the upload leaves vkCmdUpdateBuffer and goes through the 256 MB transfer
+ring, which fills in ~30 s and crashes vrcompositor ("Vulkan transfer ring
+buffer overflow") - the headset goes dark right after the controllers turn
+on. A hand-drawn Room Setup outline easily has 150+ walls.
+
+applyBlob now cuts every closed outline to at most 100 walls with
+Douglas-Peucker on the floor plane, using the smallest tolerance that fits
+(a real 151-wall zone became 98 walls, at most 6 mm off). Zones that are
+already small, or that it doesn't understand, are applied unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ playarea_linux.go               |   4 +
+ playarea_simplify_linux.go      | 186 ++++++++++++++++++++++++++++++++
+ playarea_simplify_linux_test.go |  32 ++++++
+ 3 files changed, 222 insertions(+)
+ create mode 100644 playarea_simplify_linux.go
+ create mode 100644 playarea_simplify_linux_test.go
+
+diff --git a/playarea_linux.go b/playarea_linux.go
+index 0165ae3..c00cb13 100644
+--- a/playarea_linux.go
++++ b/playarea_linux.go
+@@ -281,6 +281,10 @@ func formatArea(pa []float64) string {
+ }
+ 
+ func applyBlob(blob string) error {
++	if s, before, after, ok := simplifyChaperoneBlob(blob); ok {
++		zoneLogf("зону спрощено: %d → %d стін (інакше SteamVR падає, коли видно межі)", before, after)
++		blob = s
++	}
+ 	code, out, errOut := runHelper(25*time.Second, blob, "import", "-")
+ 	if code == 0 && strings.Contains(out, "applied") {
+ 		return nil
+diff --git a/playarea_simplify_linux.go b/playarea_simplify_linux.go
+new file mode 100644
+index 0000000..5de8299
+--- /dev/null
++++ b/playarea_simplify_linux.go
+@@ -0,0 +1,186 @@
++//go:build linux
++// +build linux
++
++package main
++
++// SteamVR's compositor re-uploads the chaperone wall mesh every frame while the
++// bounds are visible, 480 bytes per wall. Above 136 walls (> 65535 bytes) that
++// upload leaves the vkCmdUpdateBuffer path and goes through the 256 MB transfer
++// ring, which fills in ~30 s and crashes vrcompositor ("Vulkan transfer ring
++// buffer overflow", or a GPU fault on SteamVR 2.19.1) - the headset goes dark
++// right after the controllers turn on. A hand-drawn Room Setup outline easily has
++// 150+ walls, so zones are simplified (Douglas-Peucker on the floor outline,
++// smallest tolerance that fits) before they are applied. 98 walls ≈ 6 mm error.
++
++import (
++	"encoding/json"
++	"math"
++)
++
++const maxChaperoneWalls = 100
++
++type pt2 struct{ x, z float64 }
++
++func dist2(a, b pt2) float64 { return math.Hypot(a.x-b.x, a.z-b.z) }
++
++func douglasPeucker(pts []pt2, eps float64) []pt2 {
++	if len(pts) < 3 {
++		return pts
++	}
++	a, b := pts[0], pts[len(pts)-1]
++	dmax, idx := 0.0, 0
++	dx, dz := b.x-a.x, b.z-a.z
++	l := math.Hypot(dx, dz)
++	for i := 1; i < len(pts)-1; i++ {
++		p := pts[i]
++		var d float64
++		if l > 1e-9 {
++			d = math.Abs(dz*(p.x-a.x)-dx*(p.z-a.z)) / l
++		} else {
++			d = dist2(p, a)
++		}
++		if d > dmax {
++			dmax, idx = d, i
++		}
++	}
++	if dmax > eps {
++		left := douglasPeucker(pts[:idx+1], eps)
++		right := douglasPeucker(pts[idx:], eps)
++		return append(append([]pt2{}, left[:len(left)-1]...), right...)
++	}
++	return []pt2{a, b}
++}
++
++// simplifyRing simplifies a closed outline (no repeated last point).
++func simplifyRing(pts []pt2, eps float64) []pt2 {
++	far := 0
++	for i := range pts {
++		if dist2(pts[0], pts[i]) > dist2(pts[0], pts[far]) {
++			far = i
++		}
++	}
++	a := douglasPeucker(pts[:far+1], eps)
++	closed := append(append([]pt2{}, pts[far:]...), pts[0])
++	b := douglasPeucker(closed, eps)
++	return append(append([]pt2{}, a[:len(a)-1]...), b[:len(b)-1]...)
++}
++
++type wallSeg struct {
++	p, q   pt2
++	bottom float64
++	height float64
++}
++
++// simplifyChaperoneBlob returns the blob with every universe's collision_bounds
++// cut to at most maxChaperoneWalls walls, the number of walls before/after, and
++// whether anything changed. Blobs it does not understand are returned as is.
++func simplifyChaperoneBlob(blob string) (string, int, int, bool) {
++	var doc map[string]interface{}
++	if err := json.Unmarshal([]byte(blob), &doc); err != nil {
++		return blob, 0, 0, false
++	}
++	us, _ := doc["universes"].([]interface{})
++	before, after, changed := 0, 0, false
++	for _, ui := range us {
++		u, _ := ui.(map[string]interface{})
++		walls, _ := u["collision_bounds"].([]interface{})
++		before += len(walls)
++		segs, ok := parseWalls(walls)
++		if !ok || len(segs) <= maxChaperoneWalls {
++			after += len(walls)
++			continue
++		}
++		// split into closed loops of connected walls
++		var loops [][]wallSeg
++		cur := []wallSeg{segs[0]}
++		for _, s := range segs[1:] {
++			if dist2(s.p, cur[len(cur)-1].q) < 1e-4 {
++				cur = append(cur, s)
++			} else {
++				loops = append(loops, cur)
++				cur = []wallSeg{s}
++			}
++		}
++		loops = append(loops, cur)
++
++		var out []interface{}
++		for eps := 0.002; eps < 1; eps *= 1.25 {
++			out = out[:0]
++			for _, lp := range loops {
++				isClosed := len(lp) > 3 && dist2(lp[0].p, lp[len(lp)-1].q) < 1e-4
++				if !isClosed {
++					for _, s := range lp {
++						out = append(out, makeWall(s.p, s.q, s.bottom, s.height))
++					}
++					continue
++				}
++				pts := make([]pt2, len(lp))
++				for i, s := range lp {
++					pts[i] = s.p
++				}
++				sp := simplifyRing(pts, eps)
++				for i := range sp {
++					out = append(out, makeWall(sp[i], sp[(i+1)%len(sp)], lp[0].bottom, lp[0].height))
++				}
++			}
++			if len(out) <= maxChaperoneWalls {
++				break
++			}
++		}
++		u["collision_bounds"] = out
++		after += len(out)
++		changed = true
++	}
++	if !changed {
++		return blob, before, after, false
++	}
++	b, err := json.MarshalIndent(doc, "", "   ")
++	if err != nil {
++		return blob, before, before, false
++	}
++	return string(b), before, after, true
++}
++
++func num(v interface{}) (float64, bool) {
++	f, ok := v.(float64)
++	return f, ok
++}
++
++// parseWalls reads walls of the form [[x,y0,z],[x,y1,z],[x2,y1,z2],[x2,y0,z2]].
++func parseWalls(walls []interface{}) ([]wallSeg, bool) {
++	segs := make([]wallSeg, 0, len(walls))
++	for _, wi := range walls {
++		w, _ := wi.([]interface{})
++		if len(w) != 4 {
++			return nil, false
++		}
++		var c [4][3]float64
++		for i := 0; i < 4; i++ {
++			p, _ := w[i].([]interface{})
++			if len(p) != 3 {
++				return nil, false
++			}
++			for j := 0; j < 3; j++ {
++				f, ok := num(p[j])
++				if !ok {
++					return nil, false
++				}
++				c[i][j] = f
++			}
++		}
++		segs = append(segs, wallSeg{
++			p: pt2{c[0][0], c[0][2]}, q: pt2{c[3][0], c[3][2]},
++			bottom: c[0][1], height: c[1][1],
++		})
++	}
++	return segs, len(segs) > 0
++}
++
++func makeWall(p, q pt2, bottom, height float64) []interface{} {
++	return []interface{}{
++		[]interface{}{p.x, bottom, p.z},
++		[]interface{}{p.x, height, p.z},
++		[]interface{}{q.x, height, q.z},
++		[]interface{}{q.x, bottom, q.z},
++	}
++}
+diff --git a/playarea_simplify_linux_test.go b/playarea_simplify_linux_test.go
+new file mode 100644
+index 0000000..2818ba7
+--- /dev/null
++++ b/playarea_simplify_linux_test.go
+@@ -0,0 +1,32 @@
++//go:build linux
++
++package main
++
++import (
++	"encoding/json"
++	"math"
++	"testing"
++)
++
++// A hand-drawn-like closed outline with 200 walls must come out at
++// <= maxChaperoneWalls walls, and a second pass must change nothing.
++func TestSimplifyChaperone(t *testing.T) {
++	var walls []interface{}
++	n := 200
++	for i := 0; i < n; i++ {
++		a, b := 2*math.Pi*float64(i)/float64(n), 2*math.Pi*float64(i+1)/float64(n)
++		r := func(x float64) float64 { return 1.5 + 0.2*math.Sin(5*x) }
++		walls = append(walls, makeWall(pt2{r(a) * math.Cos(a), r(a) * math.Sin(a)},
++			pt2{r(b) * math.Cos(b), r(b) * math.Sin(b)}, 0, 2.43))
++	}
++	doc := map[string]interface{}{"jsonid": "chaperone_info", "version": 5.0,
++		"universes": []interface{}{map[string]interface{}{"collision_bounds": walls, "universeID": "1"}}}
++	blob, _ := json.Marshal(doc)
++	s, before, after, ok := simplifyChaperoneBlob(string(blob))
++	if !ok || before != n || after > maxChaperoneWalls || after < 20 {
++		t.Fatalf("ok=%v %d -> %d", ok, before, after)
++	}
++	if _, b2, a2, ok2 := simplifyChaperoneBlob(s); ok2 || b2 != a2 {
++		t.Fatal("second pass should be a no-op")
++	}
++}
+-- 
+2.56.0
